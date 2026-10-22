@@ -57,6 +57,9 @@ DEFAULT_PJSC_LAMBDA_BY_LINK = {
 # while HalfPhysicsWorld expects the converted Z-up pose.
 _RX90_YUP_TO_ZUP = R.from_matrix(np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]]))
 _NECK_HEAD_BODY_POSE_JOINTS = (11, 14)
+# Semantic ID of the humanoid's own body in the ego semantic image
+AGENT_SEMANTIC_ID = 800000
+
 _MOTION_XB_DIM = 75
 _MOTION_BODY_POSE_DIM = 69
 
@@ -572,6 +575,9 @@ class HalfPhysicsEnv:
             str(self.agent_urdf)
         )
         self.agent.auto_clamp_joint_limits = False
+        # Label the body in the semantic image
+        for node in self.agent.visual_scene_nodes:
+            node.semantic_id = AGENT_SEMANTIC_ID
         self.smplx2urdf, self.urdf2smplx = runtime.hp.make_smplx_and_urdf_mappings(
             self.agent
         )
@@ -1051,20 +1057,27 @@ class HalfPhysicsEnv:
         return result
 
     def ego_camera_frame(self) -> dict[str, np.ndarray]:
-        """Return depth, pose, and intrinsics of the ego camera's last render.
+        """Return depth, body mask, pose, and intrinsics of the ego camera's last render.
 
-        Depth is rendered on request; the cameras and scene have not moved
-        since the last ego RGB render, so it is pixel-aligned with that image.
-        Depth is in metres (0 = no hit). The pose is camera-to-world in
+        Depth and the semantic image for the body mask are rendered on
+        request; the cameras and scene have not moved since the last ego RGB
+        render, so both are pixel-aligned with that image.
+        Depth is in metres (0 = no hit). ``body_mask`` is True where the
+        humanoid's own body is seen. The pose is camera-to-world in
         Habitat's Y-up world with an OpenGL-style camera (x right, y up,
         looking along -z). Intrinsics are (fx, fy, cx, cy) in pixels.
         """
 
-        if not self.ego_depth_enabled:
-            raise RuntimeError("ego_camera_frame requires ego_depth_enabled")
+        if not (self.ego_depth_enabled and self.ego_semantic_enabled):
+            raise RuntimeError(
+                "ego_camera_frame requires ego_depth_enabled and ego_semantic_enabled"
+            )
         depth_sensor = self.sim._sensors["ego_depth"]
         depth_sensor.draw_observation()
         depth = np.array(depth_sensor.get_observation(), dtype=np.float32)
+        semantic_sensor = self.sim._sensors["ego_semantic"]
+        semantic_sensor.draw_observation()
+        body_mask = np.asarray(semantic_sensor.get_observation()) == AGENT_SEMANTIC_ID
 
         camera = self.sim._sensors["ego_rgb"]._sensor_object
         matrix = camera.node.absolute_transformation()
@@ -1073,7 +1086,12 @@ class HalfPhysicsEnv:
         height, width = self.ego_camera.resolution
         focal = width / 2.0 / np.tan(np.radians(float(camera.hfov)) / 2.0)
         intrinsics = np.array([focal, focal, width / 2.0, height / 2.0])
-        return {"depth": depth, "pose": pose, "intrinsics": intrinsics}
+        return {
+            "depth": depth,
+            "body_mask": body_mask,
+            "pose": pose,
+            "intrinsics": intrinsics,
+        }
 
     def _update_cameras(self) -> None:
         """Attach ego and optional exo cameras to the human's realized pose."""

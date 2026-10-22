@@ -364,6 +364,7 @@ class HCFindNavInteractEvaluator:
             compute_metrics=self.compute_metrics,
             video_enabled=self.save_video,
             ego_depth_enabled=self.save_frames,
+            ego_semantic_enabled=self.save_frames,
             **physics_kwargs,
         )
         self.motion = MotionSkillRunner(
