@@ -35,6 +35,39 @@ def test_final_find_rule_joins_render_and_non_negated_target_sentence():
     assert not claims_target_visible("I can see a table and no target.", "bed")
 
 
+def test_perception_counts_every_measured_step_in_one_cell():
+    recorder = PaperMetricRecorder(
+        episode=SimpleNamespace(object_category="bed"),
+        env=None,
+        config={},
+        profile_name="test",
+        rollout_index=0,
+    )
+    for available, pixels, visible_state in [
+        (True, 0, "The bed is visible ahead."),
+        (True, 99, "The bed is visible ahead."),  # below threshold
+        (True, 0, "The bed is not visible."),
+        (True, 500, "The bed is visible ahead."),
+        (False, 0, "The bed is visible ahead."),  # no measurement, not counted
+    ]:
+        recorder.record_decision(
+            step=0,
+            decision=SimpleNamespace(
+                stage_outputs=(),
+                planner_skill={"visible_state": visible_state},
+                action=SimpleNamespace(skill="walk"),
+            ),
+            find_observation={"available": available, "target_pixel_count": pixels},
+        )
+    assert recorder.perception == {
+        "rendered_claimed": 1,
+        "rendered_not_claimed": 0,
+        "not_rendered_claimed": 2,
+        "not_rendered_not_claimed": 1,
+    }
+    assert recorder.find_success
+
+
 def test_body_to_target_aabb_distance_is_full_3d_minimum():
     points = [[0.0, 0.0, 0.0], [2.0, 1.0, 0.0]]
     aabbs = [([2.5, 0.5, -0.5], [3.0, 1.5, 0.5])]
@@ -429,6 +462,12 @@ def _metric_row(index, *, interact=False, eligible=True):
             "interact_sr": interact,
             "geo_interact_sr": interact,
         },
+        "perception": {
+            "rendered_claimed": 3,
+            "rendered_not_claimed": 1,
+            "not_rendered_claimed": 2 + index,
+            "not_rendered_not_claimed": 4,
+        },
         "body_scene": {
             "physical_metrics_eligible": eligible,
             "collision_step_fraction": 0.25,
@@ -468,6 +507,12 @@ def test_batch_aggregation_uses_all_physics_episodes(tmp_path):
     }
     assert result["high_level_success_percent"]["find_sr"] == 50.0
     assert result["high_level_success_percent"]["interact_sr"] == 100.0
+    assert result["perception"] == {
+        "rendered_claimed": 6,
+        "rendered_not_claimed": 2,
+        "not_rendered_claimed": 5,
+        "not_rendered_not_claimed": 8,
+    }
     assert result["body_scene"]["collision_step_percent"] == 25.0
     assert result["body_scene"]["disturbed_object_path_length_mean_m"] == 1.5
     assert result["body_scene"]["escaped_affected_objects_total"] == 0

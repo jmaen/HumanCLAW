@@ -49,6 +49,15 @@ def _rate(rows: list[dict[str, Any]], key: str) -> float | None:
     return 100.0 * sum(bool(row.get(key)) for row in rows) / len(rows)
 
 
+# Decision steps by target rendered (FindSR pixel threshold) vs. claimed visible.
+PERCEPTION_CELLS = (
+    "rendered_claimed",
+    "rendered_not_claimed",
+    "not_rendered_claimed",
+    "not_rendered_not_claimed",
+)
+
+
 class PaperMetricRecorder:
     """Collect paper-aligned episode metrics without writing intermediate data."""
 
@@ -76,6 +85,7 @@ class PaperMetricRecorder:
         self.find_success = False
         self.geo_find_success = False
         self.max_target_pixels = 0
+        self.perception = {cell: 0 for cell in PERCEPTION_CELLS}
         self.n_sit = 0
         self.geo_interact_success = False
         self._last_motion_pelvis_target_contact = False
@@ -123,6 +133,13 @@ class PaperMetricRecorder:
         )
         acknowledged = claims_target_visible(visible_state, self.category)
         self.find_success = self.find_success or (rendered and acknowledged)
+
+        if sample.get("available", False):
+            cell = ("rendered" if rendered else "not_rendered") + (
+                "_claimed" if acknowledged else "_not_claimed"
+            )
+            self.perception[cell] += 1
+
         self.active_stop = self.active_stop or (
             str(getattr(getattr(decision, "action", None), "skill", "")) == "stand"
         )
@@ -227,6 +244,7 @@ class PaperMetricRecorder:
                 "geo_interact_sr": bool(is_interact and self.geo_interact_success),
                 "n_sit": int(self.n_sit),
             },
+            "perception": dict(self.perception),
             "body_scene": {
                 "physical_metrics_eligible": physical_eligible,
                 **collision,
@@ -269,6 +287,7 @@ def aggregate_metric_files(
     rows = [json.loads(path.read_text(encoding="utf-8")) for path in metric_paths]
     success_rows = [dict(row.get("success") or {}) for row in rows]
     interact_rows = [row for row in success_rows if row.get("is_interact_episode")]
+    perception_rows = [dict(row.get("perception") or {}) for row in rows]
     physical_rows = [
         row
         for row in rows
@@ -305,6 +324,10 @@ def aggregate_metric_files(
             "nav_sr_1m": _rate(success_rows, "nav_sr_1m"),
             "interact_sr": _rate(interact_rows, "interact_sr"),
             "geo_interact_sr": _rate(interact_rows, "geo_interact_sr"),
+        },
+        "perception": {
+            cell: sum(int(row.get(cell) or 0) for row in perception_rows)
+            for cell in PERCEPTION_CELLS
         },
         "body_scene": {
             "collision_step_percent": (
