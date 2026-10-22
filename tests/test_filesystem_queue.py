@@ -53,3 +53,14 @@ def test_response_waits_for_json_body_after_filename_is_visible(tmp_path: Path) 
     assert model.call_index == 1
     assert not any((queue_dir / "done").iterdir())
 
+
+
+def test_request_carries_the_frame_directory(tmp_path: Path) -> None:
+    queue_dir = tmp_path / "queue"
+    model = _model(queue_dir)
+    model.frame_dir = "/runs/ep1/rollout_00/frames"
+    call_id = model._write_request([{"role": "user", "content": "test"}])
+    request = json.loads(
+        (queue_dir / "pending" / call_id / "request.json").read_text(encoding="utf-8")
+    )
+    assert request["frame_dir"] == "/runs/ep1/rollout_00/frames"

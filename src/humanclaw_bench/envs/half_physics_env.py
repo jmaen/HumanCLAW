@@ -358,6 +358,7 @@ class HalfPhysicsEnv:
         fps: float = 30.0,
         ego_resolution: tuple[int, int] = (448, 448),
         ego_semantic_enabled: bool = False,
+        ego_depth_enabled: bool = False,
         collect_metric_contacts: bool = False,
         video_enabled: bool = False,
         third_person_resolution: tuple[int, int] = (512, 512),
@@ -388,6 +389,7 @@ class HalfPhysicsEnv:
         # the environment makes it impossible for a nominal rollout to
         # accidentally pay semantic-render, contact-query, or exo-render cost.
         self.ego_semantic_enabled = bool(ego_semantic_enabled)
+        self.ego_depth_enabled = bool(ego_depth_enabled)
         self.collect_metric_contacts = bool(collect_metric_contacts)
         self.video_enabled = bool(video_enabled)
         self.third_person_camera = ThirdPersonCameraConfig(
@@ -519,6 +521,15 @@ class HalfPhysicsEnv:
                 semantic_spec.position = mn.Vector3(0, 0, 0)
                 semantic_spec.orientation = mn.Vector3(0, 0, 0)
                 sensors.append(semantic_spec)
+
+            if self.ego_depth_enabled:
+                depth_spec = habitat_sim.CameraSensorSpec()
+                depth_spec.uuid = "ego_depth"
+                depth_spec.sensor_type = habitat_sim.SensorType.DEPTH
+                depth_spec.resolution = list(self.ego_camera.resolution)
+                depth_spec.position = mn.Vector3(0, 0, 0)
+                depth_spec.orientation = mn.Vector3(0, 0, 0)
+                sensors.append(depth_spec)
 
             if self.video_enabled:
                 third_spec = habitat_sim.CameraSensorSpec()
@@ -1039,6 +1050,31 @@ class HalfPhysicsEnv:
             }
         return result
 
+    def ego_camera_frame(self) -> dict[str, np.ndarray]:
+        """Return depth, pose, and intrinsics of the ego camera's last render.
+
+        Depth is rendered on request; the cameras and scene have not moved
+        since the last ego RGB render, so it is pixel-aligned with that image.
+        Depth is in metres (0 = no hit). The pose is camera-to-world in
+        Habitat's Y-up world with an OpenGL-style camera (x right, y up,
+        looking along -z). Intrinsics are (fx, fy, cx, cy) in pixels.
+        """
+
+        if not self.ego_depth_enabled:
+            raise RuntimeError("ego_camera_frame requires ego_depth_enabled")
+        depth_sensor = self.sim._sensors["ego_depth"]
+        depth_sensor.draw_observation()
+        depth = np.array(depth_sensor.get_observation(), dtype=np.float32)
+
+        camera = self.sim._sensors["ego_rgb"]._sensor_object
+        matrix = camera.node.absolute_transformation()
+        # Magnum indexes matrices by column; transpose to row-major numpy.
+        pose = np.array([list(matrix[c]) for c in range(4)], dtype=np.float64).T
+        height, width = self.ego_camera.resolution
+        focal = width / 2.0 / np.tan(np.radians(float(camera.hfov)) / 2.0)
+        intrinsics = np.array([focal, focal, width / 2.0, height / 2.0])
+        return {"depth": depth, "pose": pose, "intrinsics": intrinsics}
+
     def _update_cameras(self) -> None:
         """Attach ego and optional exo cameras to the human's realized pose."""
 
@@ -1088,6 +1124,11 @@ class HalfPhysicsEnv:
         if self.ego_semantic_enabled and "ego_semantic" in self.sim._sensors:
             self.sim._sensors[
                 "ego_semantic"
+            ]._sensor_object.node.transformation = ego_sensor_node.transformation
+
+        if self.ego_depth_enabled and "ego_depth" in self.sim._sensors:
+            self.sim._sensors[
+                "ego_depth"
             ]._sensor_object.node.transformation = ego_sensor_node.transformation
 
         if self.video_enabled and "third_person_rgb" in self.sim._sensors:

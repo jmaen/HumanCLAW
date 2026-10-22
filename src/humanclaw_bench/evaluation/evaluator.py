@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 from PIL import Image
 
 from humanclaw_bench.agent.skills import skill_to_text
@@ -105,6 +106,7 @@ def _clear_generated_rollout_artifacts(output_dir: Path) -> None:
     for pattern in (
         "step???_percept_mid_low.json",
         "step???_verifier.json",
+        "frames/step???.npz",
     ):
         for path in output_dir.glob(pattern):
             if path.is_file() or path.is_symlink():
@@ -161,6 +163,25 @@ def _write_step_vlm_records(
     return written
 
 
+def _write_step_frame(
+    output_dir: Path,
+    step: int,
+    rgb: np.ndarray,
+    camera: dict[str, np.ndarray],
+) -> Path:
+    """Write the ego RGB-D frame and camera geometry the VLM decides from.
+
+    Written before the VLM call, so a queue worker can read every frame up to
+    and including the current step. See ``HalfPhysicsEnv.ego_camera_frame``
+    for units and conventions.
+    """
+
+    path = output_dir / "frames" / f"step{step:03d}.npz"
+    path.parent.mkdir(exist_ok=True)
+    np.savez_compressed(path, rgb=rgb, **camera)
+    return path
+
+
 def _history_item(step: int, decision: PlannerResult) -> dict[str, Any]:
     """Keep only the in-memory fields consumed by the next planner call."""
 
@@ -202,8 +223,11 @@ class HCFindNavInteractEvaluator:
         self.seed_pt: str | None = None
         self._initial_xb_world_75: Any = None
         self._model_config: dict[str, Any] | None = None
+        self._model: Any = None
         self.compute_metrics = bool(self.config.get("compute_metrics", False))
         self.save_video = bool(self.config.get("save_video", False))
+        # Set from the model config: per-step RGB-D frames are a model input.
+        self.save_frames = False
 
     def check_config_valid(self) -> None:
         """Validate user options, model settings, and mode-specific output requirements."""
@@ -313,6 +337,8 @@ class HCFindNavInteractEvaluator:
         self.output_root.mkdir(parents=True, exist_ok=True)
 
         model = build_model(self._model_config, self.output_root)
+        self._model = model
+        self.save_frames = bool(self._model_config.get("save_frames", False))
         # Asset/backend keys have explicit constructor arguments below.  Every
         # remaining physics key is a public environment setting, which keeps
         # the complete non-inheriting profile forwardable without duplication.
@@ -337,6 +363,7 @@ class HCFindNavInteractEvaluator:
             ),
             compute_metrics=self.compute_metrics,
             video_enabled=self.save_video,
+            ego_depth_enabled=self.save_frames,
             **physics_kwargs,
         )
         self.motion = MotionSkillRunner(
@@ -529,6 +556,8 @@ class HCFindNavInteractEvaluator:
                 self.env.set_video_frame_sink(video_writer.append)
 
             self.agent.reset(episode)
+            if self.save_frames and hasattr(self._model, "frame_dir"):
+                self._model.frame_dir = str(output_dir / "frames")
             observation = self._reset_env_for_rollout(episode)
             if video_writer is not None:
                 self.env.emit_initial_video_frame()
@@ -543,6 +572,13 @@ class HCFindNavInteractEvaluator:
 
             for step in range(episode.max_steps):
                 ego_image = Image.fromarray(observation.head_rgb)
+                if self.save_frames:
+                    _write_step_frame(
+                        output_dir,
+                        step,
+                        observation.head_rgb,
+                        self.env.ego_camera_frame(),
+                    )
                 find_observation = (
                     self.env.metric_find_observation()
                     if metric_recorder is not None

@@ -98,6 +98,7 @@ class FilesystemQueueModel:
         self.timeout_s = float(timeout_s)
         self.poll_interval_s = float(poll_interval_s)
         self.current_episode_step = -1
+        self.frame_dir: str | None = None
         self.call_index = 0
         self.last_usage: dict[str, Any] = {}
         del output_dir
@@ -158,6 +159,7 @@ class FilesystemQueueModel:
             "response_format": self.response_format,
             "stage": _stage(messages),
             "episode_step": self.current_episode_step,
+            "frame_dir": self.frame_dir,
             "created_time": time.time(),
             "pid": os.getpid(),
         }
